@@ -18,6 +18,8 @@ def main():
         if not line.strip():
             continue
         print("agent:", agent.next(line)["message"])
+        if agent.session.state.name in ("CLOSED", "LOCKED"):
+            break  # the agent has said its last word; exit instead of looping
 
 
 if __name__ == "__main__":

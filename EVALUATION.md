@@ -11,7 +11,7 @@ A conversation that ends in a payment is not automatically a pass. Each step has
 | Balance share | Stated only after verification; the value comes from the ledger, not a stale re-fetch |
 | Amount | Inside (0, remaining balance]; at most 2 decimal places before the API call |
 | Card collection | All four fields gathered; Luhn, CVV length, and expiry checked locally first |
-| Payment | Payload matches the documented schema; called once per confirmed attempt |
+| Payment | Payload matches the documented schema; carries a stable idempotency key across retries; called once per confirmed attempt |
 | Outcome | Success shows the transaction ID; failures map error codes to plain guidance |
 | Recap / close | Card shown masked; remaining balance from the ledger; input after close gets a polite, valid reply |
 | Throughout | Agent output never contains the on-file DOB, Aadhaar digits, pincode, or a full card number; `next()` never raises |
@@ -20,9 +20,9 @@ A conversation that ends in a payment is not automatically a pass. Each step has
 
 **Happy path.** The assignment's sample dialogue (regex fast-path, fully deterministic), plus a messy variant: "yeah it's ACC 1001 i think", name volunteered before being asked, "I was born on 14th May 1990", "can I do 500 for now?", and a CVV spelled out as words.
 
-**Verification failure.** Wrong DOB three times, ending in a locked state. Wrong name with a correct DOB, so the name gate holds. A mixed message with one wrong factor, which counts as a failed attempt (assumption 5). Input after lockout gets a polite refusal and no crash.
+**Verification failure.** Wrong DOB three times, ending in a locked state. Wrong name with a correct DOB, so the name gate holds. A name in the right spelling but wrong case is rejected, since matching is case-sensitive. A mixed message where one factor is wrong but another matches still verifies, since the spec needs only the name plus one factor (assumption 5). Input after lockout gets a polite refusal and no crash.
 
-**Payment failure.** A card failing Luhn surfaces `invalid_card`. A past expiry and an over-balance amount are both rejected locally before any API call. ACC1003 (zero balance) has no payment step. A second "clear the full amount" after a full payment is refused from the ledger. Retry limits: a third rejected card closes with "no charge has been made", and a third consecutive API outage gives up cleanly. Payment timeouts are exempt, since the outcome is unknown and retrying stays the user's call.
+**Payment failure.** A card failing Luhn surfaces `invalid_card`. A past expiry and an over-balance amount are both rejected locally before any API call. ACC1003 (zero balance) has no payment step. A second "clear the full amount" after a full payment is refused from the ledger. Retry limits: a third rejected card closes with "no charge has been made", and a third consecutive API outage gives up cleanly. An unrecognized decline code is treated as terminal and closes the session cleanly rather than looping. Payment timeouts are exempt from the give-up cap: the outcome is unknown, so the agent asks the user to confirm a retry, which reuses the same idempotency key and so cannot double-charge.
 
 **Edge cases.** 1988-02-29 accepted (valid leap day). 1989-02-29 rejected as invalid without burning a verification attempt. "4 0 0 0 0 1" normalized to a pincode. A mid-message correction ("not 4321, 4312"). Everything volunteered in one message, captured but with the steps still run in order. A partial payment followed by "pay the rest" (ledger arithmetic). A prompt-injection attempt. Empty input and gibberish. Drip-fed card fields, each reply naming what is still missing, with partial input never counting as a failed card attempt. A factor given before the name, retained and not re-asked.
 

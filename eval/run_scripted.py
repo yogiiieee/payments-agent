@@ -68,6 +68,8 @@ def run_scenario(sc: Scenario) -> tuple[list[str], int]:
             failures.append(f"payment payload had a missing card field: {p['card']}")
         if p["amount"] != p["amount"].quantize(Decimal("0.01")):
             failures.append(f"payment amount not 2dp: {p['amount']}")
+        if not p["idempotency_key"]:
+            failures.append("payment sent without an idempotency key")
     if sc.custom:
         failures.extend(sc.custom(agent, mock))
 

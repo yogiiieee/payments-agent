@@ -5,14 +5,33 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 import requests
+from pydantic import BaseModel, ValidationError, field_validator
+
+
+class Account(BaseModel):
+    """Validated shape of the lookup-account response, so the state machine reads
+    typed attributes instead of a raw dict and a malformed response fails at the edge."""
+
+    account_id: str
+    full_name: str
+    dob: str
+    aadhaar_last4: str
+    pincode: str
+    balance: Decimal
+
+    @field_validator("balance", mode="before")
+    @classmethod
+    def _balance_to_decimal(cls, v: object) -> Decimal:
+        return Decimal(str(v))  # via str() so a JSON float keeps its exact value
 
 
 class PaymentApi(Protocol):
     """The API surface the state machine needs; satisfied structurally, mocks included."""
 
-    def lookup_account(self, account_id: str) -> dict: ...
+    def lookup_account(self, account_id: str) -> Account: ...
 
-    def process_payment(self, account_id: str, amount: Decimal, card: dict) -> str: ...
+    def process_payment(self, account_id: str, amount: Decimal, card: dict,
+                        idempotency_key: str) -> str: ...
 
 
 class AccountNotFound(Exception):
@@ -43,7 +62,7 @@ class ApiClient:
         self.timeout = timeout
         self.session = requests.Session()
 
-    def lookup_account(self, account_id: str) -> dict:
+    def lookup_account(self, account_id: str) -> Account:
         last_exc: Exception | None = None
         for _ in range(3):  # lookup is read-only, safe to retry
             try:
@@ -59,15 +78,16 @@ class ApiClient:
                 raise AccountNotFound(account_id)
             if resp.status_code == 200:
                 try:
-                    return resp.json()
-                except ValueError as exc:
-                    raise APIUnavailable("malformed response") from exc
+                    return Account.model_validate(resp.json())
+                except (ValueError, ValidationError) as exc:
+                    raise APIUnavailable("malformed lookup response") from exc
             if resp.status_code < 500:
                 raise APIUnavailable(f"unexpected status {resp.status_code}")
             last_exc = APIUnavailable(f"server error {resp.status_code}")
         raise APIUnavailable("lookup failed") from last_exc
 
-    def process_payment(self, account_id: str, amount: Decimal, card: dict) -> str:
+    def process_payment(self, account_id: str, amount: Decimal, card: dict,
+                        idempotency_key: str) -> str:
         payload: dict[str, Any] = {
             "account_id": account_id,
             "amount": float(amount.quantize(Decimal("0.01"))),
@@ -82,19 +102,26 @@ class ApiClient:
                 },
             },
         }
-        try:
-            # No retry: the endpoint has no idempotency key, so a blind
-            # retry after a timeout could charge the card twice.
-            resp = self.session.post(
-                f"{self.base_url}/api/process-payment",
-                json=payload,
-                timeout=self.timeout,
-            )
-        except requests.Timeout as exc:
-            raise PaymentOutcomeUnknown() from exc
-        except requests.RequestException as exc:
-            raise APIUnavailable("payment request failed") from exc
+        # The idempotency key lets the server collapse a duplicate request, so a
+        # retry after a timeout is safe and cannot charge the card twice.
+        headers = {"Idempotency-Key": idempotency_key}
+        last_timeout: Exception | None = None
+        for _ in range(2):
+            try:
+                resp = self.session.post(
+                    f"{self.base_url}/api/process-payment",
+                    json=payload, headers=headers, timeout=self.timeout,
+                )
+            except requests.Timeout as exc:
+                last_timeout = exc
+                continue
+            except requests.RequestException as exc:
+                raise APIUnavailable("payment request failed") from exc
+            return self._read_payment(resp)
+        raise PaymentOutcomeUnknown() from last_timeout
 
+    @staticmethod
+    def _read_payment(resp: requests.Response) -> str:
         if resp.status_code == 200:
             try:
                 return resp.json()["transaction_id"]

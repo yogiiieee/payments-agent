@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from agent import Agent  # noqa: E402 — imports load .env
-from payment_agent.api_client import ApiClient  # noqa: E402
+from payment_agent.api_client import Account, ApiClient  # noqa: E402
 from payment_agent.templates import TEMPLATES, Msg  # noqa: E402
 
 from .mock_api import ACCOUNTS  # noqa: E402
@@ -57,12 +57,13 @@ class RecordingApi:
         self.lookups: list[str] = []
         self.payments: list[dict] = []
 
-    def lookup_account(self, account_id: str) -> dict:
+    def lookup_account(self, account_id: str) -> Account:
         self.lookups.append(account_id)
         return self._real.lookup_account(account_id)
 
-    def process_payment(self, account_id: str, amount: Decimal, card: dict) -> str:
-        txn = self._real.process_payment(account_id, amount, card)
+    def process_payment(self, account_id: str, amount: Decimal, card: dict,
+                        idempotency_key: str) -> str:
+        txn = self._real.process_payment(account_id, amount, card, idempotency_key)
         self.payments.append({"account_id": account_id, "amount": amount})
         return txn
 

@@ -164,19 +164,30 @@ SCENARIOS = [
         custom=lambda agent, mock: [] if agent.session.verify_attempts == 1 else ["attempt count off"],
     ),
     Scenario(
-        name="one wrong factor fails the attempt even if another matches",
+        name="one matching factor verifies even with a wrong factor alongside (spec: at least one)",
         turns=[
             Turn("ACC1002", expect=["full name"]),
+            # dob is wrong (on file 1985), pincode is right; the spec needs name plus one factor
             Turn("Rajarajeswari Balasubramaniam, dob 23-11-1986, pincode 400002",
-                 expect=["don't match"]),
+                 expect=["Identity verified", "₹540.00"]),
         ],
         llm={
             "Rajarajeswari Balasubramaniam, dob 23-11-1986, pincode 400002":
                 Extraction(intent="provide_info", full_name="Rajarajeswari Balasubramaniam",
                            dob_text="23-11-1986", pincode="400002"),
         },
-        final_state=State.AWAIT_NAME,
-        custom=lambda agent, mock: [] if agent.session.verify_attempts == 1 else ["attempt count off"],
+        final_state=State.AWAIT_AMOUNT,
+        custom=lambda agent, mock: [] if agent.session.verify_attempts == 0 else ["a matching factor should not burn an attempt"],
+    ),
+    Scenario(
+        name="name in the wrong case is rejected: matching is case-sensitive, per the spec",
+        turns=[
+            Turn("ACC1001", expect=["full name"]),
+            Turn("nithin jain", expect=["don't match"]),   # right name, wrong case
+            Turn("Nithin Jain", expect=["date of birth"]),  # exact case clears the name gate
+        ],
+        final_state=State.AWAIT_FACTOR,
+        custom=lambda agent, mock: [] if agent.session.verify_attempts == 1 else ["case mismatch should burn exactly one attempt"],
     ),
     Scenario(
         name="zero balance closes without payment steps (ACC1003)",
@@ -237,20 +248,41 @@ SCENARIOS = [
         payments=1,
     ),
     Scenario(
-        name="payment timeout: no blind retry, explicit confirm, no double charge",
+        name="payment timeout: no blind retry, explicit confirm reuses the idempotency key",
         turns=[
             Turn("ACC1001", expect=["full name"]),
             Turn("Nithin Jain", expect=["date of birth"]),
             Turn("4321", expect=["Identity verified"]),
             Turn("100", expect=["card number"]),
             Turn(CARD_OK, expect=["yes/no"]),
-            Turn("yes", expect=["couldn't confirm", "won't retry"],
+            Turn("yes", expect=["couldn't confirm", "safely retry"],
                  before=lambda mock: setattr(mock, "fail_next_payment", "timeout")),
             Turn("confirm", expect=["txn_mock_001"]),
         ],
         llm={CARD_OK_MASKED: CARD_EXP_HOLDER},
         final_state=State.POST_PAYMENT,
         payments=1,
+        # the timed-out attempt and the confirm-retry must carry the same key
+        custom=lambda agent, mock: (
+            [] if mock.payment_keys[:2] == [mock.payment_keys[0]] * 2 and len(mock.payment_keys) == 2
+            else [f"timeout retry did not reuse the idempotency key: {mock.payment_keys}"]
+        ),
+    ),
+    Scenario(
+        name="unrecognized decline is terminal: agent closes cleanly, no loop",
+        turns=[
+            Turn("ACC1001", expect=["full name"]),
+            Turn("Nithin Jain", expect=["date of birth"]),
+            Turn("4321", expect=["Identity verified"]),
+            Turn("100", expect=["card number"]),
+            Turn(CARD_OK, expect=["yes/no"]),
+            Turn("yes", expect=["contact support", "Goodbye"],
+                 before=lambda mock: setattr(mock, "fail_next_payment", "fraud_suspected")),
+            Turn("what happened?", expect=["ended"]),  # closed: a polite, valid follow-up
+        ],
+        llm={CARD_OK_MASKED: CARD_EXP_HOLDER},
+        final_state=State.CLOSED,
+        payments=0,
     ),
     Scenario(
         name="prompt injection gets no account data",
@@ -278,7 +310,7 @@ SCENARIOS = [
         final_state=State.AWAIT_NAME,
         custom=lambda agent, mock: (
             ([] if agent.session.verify_attempts == 1 else ["attempts were reset"])
-            + ([] if agent.session.account["account_id"] == "ACC1002" else ["wrong account"])
+            + ([] if agent.session.account.account_id == "ACC1002" else ["wrong account"])
             + ([] if agent.session.claims.full_name is None else ["stale claims survived switch"])
         ),
     ),

@@ -46,7 +46,7 @@ class Msg(StrEnum):
     DECLINED_INVALID_EXPIRY = auto()
     DECLINED_INSUFFICIENT_BALANCE = auto()
     DECLINED_INVALID_AMOUNT = auto()
-    DECLINED_OTHER = auto()
+    DECLINED_TERMINAL = auto()
     PAYMENT_UNKNOWN = auto()
     API_UNAVAILABLE = auto()
     NOTHING_DUE = auto()
@@ -95,8 +95,8 @@ TEMPLATES = {
     Msg.DECLINED_INVALID_EXPIRY: "The payment was declined: the expiry was rejected or the card has expired. Could you share your card details again?",
     Msg.DECLINED_INSUFFICIENT_BALANCE: "The payment was declined: the amount exceeds your outstanding balance of {remaining}. How much would you like to pay?",
     Msg.DECLINED_INVALID_AMOUNT: "The payment was declined: the amount wasn't accepted. How much would you like to pay?",
-    Msg.DECLINED_OTHER: "The payment was declined ({code}). Let's try again. How much would you like to pay?",
-    Msg.PAYMENT_UNKNOWN: "I couldn't confirm whether that payment went through; the connection timed out. To avoid charging you twice I won't retry automatically. Say \"confirm\" to try again, or \"no\" to cancel.",
+    Msg.DECLINED_TERMINAL: "The payment couldn't be processed ({code}), and that's not something we can resolve here, so I'll stop. No further charge has been made. Please contact support. Goodbye!",
+    Msg.PAYMENT_UNKNOWN: "I couldn't confirm whether that payment went through; the connection timed out. Say \"confirm\" to safely retry (the payment is protected against a double charge), or \"no\" to cancel.",
     Msg.API_UNAVAILABLE: "I'm having trouble reaching the payment system right now. Please try again in a moment.",
     Msg.NOTHING_DUE: "Your balance is fully cleared, so there's nothing left to pay. Anything else?",
     Msg.POST_PAYMENT: "Your remaining balance is {remaining}. Would you like to pay more, or shall we wrap up?",

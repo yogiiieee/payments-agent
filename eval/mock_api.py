@@ -7,6 +7,7 @@ post-payment state (double charge, pay-the-rest), which the live API cannot.
 from decimal import Decimal
 
 from payment_agent.api_client import (
+    Account,
     AccountNotFound,
     APIUnavailable,
     PaymentDeclined,
@@ -30,19 +31,22 @@ class MockApi:
         self.accounts = {a["account_id"]: dict(a) for a in ACCOUNTS}
         self.lookups: list[str] = []
         self.payments: list[dict] = []          # successful payloads, checked by the runner
+        self.payment_keys: list[str] = []        # every attempt's key, for idempotency checks
         self.fail_next_lookup: bool = False
         self.fail_next_payment: str | None = None  # an error_code, or "timeout"
 
-    def lookup_account(self, account_id: str) -> dict:
+    def lookup_account(self, account_id: str) -> Account:
         self.lookups.append(account_id)
         if self.fail_next_lookup:
             self.fail_next_lookup = False
             raise APIUnavailable("injected outage")
         if account_id not in self.accounts:
             raise AccountNotFound(account_id)
-        return dict(self.accounts[account_id])
+        return Account.model_validate(self.accounts[account_id])
 
-    def process_payment(self, account_id: str, amount: Decimal, card: dict) -> str:
+    def process_payment(self, account_id: str, amount: Decimal, card: dict,
+                        idempotency_key: str) -> str:
+        self.payment_keys.append(idempotency_key)  # recorded even on failure, to check reuse
         if self.fail_next_payment == "timeout":
             self.fail_next_payment = None
             raise PaymentOutcomeUnknown()
@@ -56,6 +60,7 @@ class MockApi:
             raise PaymentDeclined("invalid_amount")
         if amt > balance:
             raise PaymentDeclined("insufficient_balance")
-        self.payments.append({"account_id": account_id, "amount": amt, "card": dict(card)})
+        self.payments.append({"account_id": account_id, "amount": amt, "card": dict(card),
+                              "idempotency_key": idempotency_key})
         account["balance"] = float(balance - amt)
         return f"txn_mock_{len(self.payments):03d}"

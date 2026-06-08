@@ -27,8 +27,9 @@ def words_to_digits(text: str) -> str:
 
 
 def canonical_name(name: str) -> str:
-    # Case and spacing are presentation, not identity; matching stays exact after this.
-    return " ".join(name.split()).casefold()
+    # Collapse only surrounding and repeated whitespace. Case is significant: the
+    # assignment forbids case-insensitive name matching, so the compare stays case-exact.
+    return " ".join(name.split())
 
 
 _NAME_LEADIN = re.compile(

@@ -70,8 +70,9 @@ Two of these are quiet edge cases. 1988 is a leap year, so ACC1004's DOB 1988-02
 Short version. The reasoning behind each is in [DESIGN.md](DESIGN.md):
 
 - The test server never persists balance updates, so the agent keeps an in-session ledger (payments made, remaining balance) to prevent double charges and to compute "pay the rest". Payments are not recoverable across sessions.
-- Verification matching is exact equality after canonicalizing presentation (case, spacing, date format). No edit distance.
-- Three failed verification attempts end the session, as do three rejected cards or three consecutive API outages. Further input gets a polite refusal.
+- Verification matching is case-sensitive exact equality after normalizing spacing and date format. No edit distance and no case folding, since the assignment forbids case-insensitive name matching, so a name in the wrong case is treated as a mismatch. A user is verified by the full name plus at least one matching secondary factor (DOB, Aadhaar last 4, or pincode).
+- Three failed verification attempts end the session, as do three rejected cards or three consecutive API outages. An unrecognized payment decline is treated as terminal and closes the session cleanly. Further input gets a polite refusal.
+- Each payment carries an idempotency key, reused across a retry, so a timed-out charge can be retried on the user's confirmation without a double charge. The interactive CLI exits once the conversation is closed or locked.
 - Ambiguous numeric dates are read as DD-MM.
 - Rejection messages never reveal which factor mismatched, and account data (DOB, Aadhaar, pincode) is never placed in the LLM context or echoed to the user.
 - Raw card data is masked in conversation history and held only until the payment call completes.
