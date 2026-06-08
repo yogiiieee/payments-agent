@@ -29,13 +29,13 @@ Python 3.11+.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # requirements-dev.txt adds lint and type tooling
+pip install -r requirements.txt
 cp .env.sample .env                    # fill in OPENAI_API_KEY; PAYMENT_API_BASE_URL is pre-filled
 ```
 
 `.env` loads automatically (python-dotenv) whenever the `payment_agent` package is imported, so the CLI, both evals, and `from agent import Agent` all pick it up. Real environment variables take precedence over `.env`.
 
-The `Agent` constructor takes no arguments, as the assignment fixes, so all config comes from the environment. See `.env.sample` for the full list. `PAYMENT_API_BASE_URL` is required and the client refuses to construct without it. `OPENAI_API_KEY` powers LLM extraction. The extraction model defaults to `gpt-5-mini`; override it with `EXTRACTOR_MODEL`. The three retry limits are required and read from the environment (`MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, `MAX_API_FAILURES`); `.env.sample` ships them at 3. Clean, well-formatted inputs like the sample dialogue are handled by a regex fast-path and need no OpenAI key.
+The `Agent` constructor takes no arguments, as the assignment fixes, so all config comes from the environment. See `.env.sample` for the full list. `PAYMENT_API_BASE_URL` is required and the client refuses to construct without it. LLM extraction runs on OpenAI by default (`OPENAI_API_KEY`); set `EXTRACTOR_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` to use Claude instead. The model defaults to `gpt-5-mini` or `claude-haiku-4-5` per provider; override either with `EXTRACTOR_MODEL`. The three retry limits are required and read from the environment (`MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, `MAX_API_FAILURES`); `.env.sample` ships them at 3. Clean, well-formatted inputs like the sample dialogue are handled by a regex fast-path and need no LLM key.
 
 ## Run
 

@@ -117,6 +117,9 @@ def fast_extract(text: str, state: State) -> Extraction | None:
 
 _SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "extraction_system.txt").read_text(encoding="utf-8")
 
+# Per-provider default; EXTRACTOR_MODEL overrides. Both are cheap structured-output models.
+_DEFAULT_MODEL = {"openai": "gpt-5-mini", "anthropic": "claude-haiku-4-5"}
+
 
 class Extractor(Protocol):
     """Turn parser surface; satisfied structurally by LLMExtractor and test fakes."""
@@ -125,17 +128,34 @@ class Extractor(Protocol):
 
 
 class LLMExtractor:
-    def __init__(self, model: str | None = None):
-        self.model: str = model or os.getenv("EXTRACTOR_MODEL") or "gpt-5-mini"
-        self._runnable: Any | None = None
+    """Structured extraction via LangChain, on OpenAI or Anthropic.
+
+    EXTRACTOR_PROVIDER selects the backend (openai | anthropic); EXTRACTOR_MODEL
+    overrides the model. Both backends expose with_structured_output(Extraction),
+    so only the client construction differs; the rest of the pipeline is identical.
+    """
+
+    def __init__(self, provider: str | None = None, model: str | None = None):
+        self.provider = (provider or os.getenv("EXTRACTOR_PROVIDER") or "openai").lower()
+        if self.provider not in _DEFAULT_MODEL:
+            self.provider = "openai"
+        self.model = model or os.getenv("EXTRACTOR_MODEL") or _DEFAULT_MODEL[self.provider]
+        self._runnable: Any | None = None  # lazy, so Agent() constructs without an API key
+
+    def _structured_llm(self):
+        # bounded timeout so a stalled call degrades to a re-ask, never a hang
+        if self.provider == "anthropic":
+            from langchain_anthropic import ChatAnthropic
+            llm = ChatAnthropic(model=self.model, timeout=20, max_retries=2)
+        else:
+            from langchain_openai import ChatOpenAI
+            llm = ChatOpenAI(model=self.model, timeout=20, max_retries=2)
+        return llm.with_structured_output(Extraction)
 
     def extract(self, text: str, context: str) -> Extraction | None:
         try:
             if self._runnable is None:
-                from langchain_openai import ChatOpenAI
-                # bounded timeout so a stalled call degrades to a re-ask, never a hang
-                llm = ChatOpenAI(model=self.model, timeout=20, max_retries=2)
-                self._runnable = llm.with_structured_output(Extraction)
+                self._runnable = self._structured_llm()
             prompt = f"{context}\n\nUser message: {text}" if context else f"User message: {text}"
             result = self._runnable.invoke([("system", _SYSTEM_PROMPT), ("human", prompt)])
             return result if isinstance(result, Extraction) else None
