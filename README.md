@@ -18,7 +18,7 @@ payment_agent/
   prompts/
     extraction_system.txt     system prompt for the LLM extractor
 eval/                         two-tier evaluation harness (see EVALUATION.md)
-transcripts/                  sample conversations captured from live runs
+test_runs/                    sample conversations captured from live runs
 DESIGN.md                     architecture, key decisions, assumptions
 EVALUATION.md                 test cases, metrics, observations
 ```
@@ -82,8 +82,8 @@ Short version. The reasoning behind each is in [DESIGN.md](DESIGN.md):
 [EVALUATION.md](EVALUATION.md) covers the test cases, the two-tier harness, the metrics, and what running it found:
 
 ```bash
-python -m eval.run_scripted   # Tier 1: scripted scenarios against a mocked API, no keys needed
+pytest                        # Tier 1: scripted scenarios against a mocked API, no keys needed
 python -m eval.run_live       # Tier 2: an LLM plays the user against the live API
 ```
 
-Sample conversations in [transcripts/](transcripts/) were captured from live runs.
+Sample conversations in [test_runs/](test_runs/) were captured from live runs.

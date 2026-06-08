@@ -1,0 +1,21 @@
+Payment collection agent. Type your message (Ctrl-C to exit).
+you: Namaste
+agent: Hello! I can help you pay your outstanding balance. Please share your account ID to get started.
+you: its account id acc 1002
+agent: Got it. Could you please confirm your full name?
+you: Rajarajeswari Balasubramaniam
+agent: Thanks. Could you verify one of: your date of birth, the last 4 digits of your Aadhaar, or your pincode?
+you: DOB is 1985-11-23 and my pincode is 4 0 0 0 0 2
+agent: Identity verified. Your outstanding balance is ₹540.00. How much would you like to pay today?
+you: please pay all
+agent: You're paying ₹540.00. Please share your card number, expiry (MM/YY), CVV, and the name on the card.
+you: card is 1234 5678 1234 5678
+agent: That card number doesn't look valid. Could you re-check it and share it again?
+you: sorry. it is 4532 0151 1283 0366
+agent: Noted. I still need: expiry (MM/YY), CVV, name on the card.
+you: it expires on may 25
+agent: That card appears to be expired. Could you use a different card?
+you: no i only have this card
+agent: Noted. I still need: expiry (MM/YY), CVV, name on the card.
+you: expiry is may 2025
+agent: I wasn't able to take a valid card after several attempts, so I'll stop here, no charge has been made. Please double-check your card details and start a new session, or contact support.

@@ -4,24 +4,30 @@
 
 The agent is a deterministic state machine with an LLM attached as a parser. Every call to `Agent.next()` runs the same pipeline:
 
+```mermaid
+graph TD
+    IN([user message]) --> S1["1. Card pre-pass - mask PAN/CVV at the edge"]
+    S1 --> S2["2. Extraction - fast-path regex, else LLM"]
+    S2 --> S3["3. Validation - dates, Luhn, lengths, grounding"]
+    S3 --> S4["4. State machine - dispatch table, strict match, ledger"]
+    S4 --> S5["5. Response - fixed template per state and event"]
+    S5 --> OUT([returns message dict])
+    S2 -->|parse| LLM["LLM - OpenAI or Anthropic via LangChain"]
+    S4 -->|call| API["Payment API - lookup / process"]
+
+    classDef edge fill:#ffd8a8,stroke:#f59e0b,color:#1e1e1e
+    classDef llm fill:#d0bfff,stroke:#8b5cf6,color:#1e1e1e
+    classDef code fill:#a5d8ff,stroke:#4a9eed,color:#1e1e1e
+    classDef core fill:#c3fae8,stroke:#0e7490,color:#1e1e1e
+    classDef out fill:#b2f2bb,stroke:#22c55e,color:#1e1e1e
+    class S1,API edge
+    class S2,LLM llm
+    class S3 code
+    class S4 core
+    class S5,OUT out
 ```
-user input
-   |
-   v
-1. card pre-pass (regex)   capture card-number / CVV digits and mask them
-   |                       before the message is stored or sent anywhere
-   v
-2. extraction (LLM)        masked text + recent masked turns -> typed result:
-   |                       an intent plus any fields present in the message
-   v
-3. validation (code)       normalize dates, Luhn-check the card, check
-   |                       lengths, drop any value not grounded in the text
-   v
-4. state machine (code)    strict matching, retry counters, payment ledger,
-   |                       API calls. Every transition is decided here.
-   v
-5. response (templates)    a fixed message chosen by (state, event)
-```
+
+Each step maps to a module: `agent.py` (pre-pass + orchestration), `extraction.py` (fast-path + LLM), `validators.py` (validation + grounding), `state_machine.py` (transitions + ledger), `templates.py` (replies).
 
 The LLM has one job: step 2, turning "yeah my account number is ACC 1001 I think" into `{intent: provide_info, account_id: "ACC1001"}`. It never sees account data from the lookup API, never decides whether verification passed, and never writes the reply. The hard rules (no payment before verification, strict matching, no exposure of account data) all live in code, where they cannot be talked around.
 
@@ -29,7 +35,7 @@ State is one dataclass held by the `Agent` instance: current state, the looked-u
 
 ## Key decisions
 
-**LLM for extraction, code for everything else.** Regex alone cannot read "I want to pay a thousand rupees" or pick the name out of "you can call me Raja but my full name is Rajarajeswari Balasubramaniam", and the evaluator is an LLM playing varied users, so input variety is open-ended. A pure-LLM agent fails the other way: models fuzzy-match names by default, and a prompt rule like "do not skip verification" can be argued around. Splitting the roles keeps the flexible part flexible and the strict part strict.
+**LLM for extraction, code for everything else.** Regex alone cannot read "I want to pay a thousand rupees" or pick the name out of "you can call me Raja but my full name is Rajarajeswari Balasubramaniam", and the evaluator is an LLM playing varied users, so input variety is open-ended. A pure-LLM agent fails the other way: models fuzzy-match names by default, and a prompt rule like "do not skip verification" can be argued around. Splitting the roles keeps the flexible part flexible and the strict part strict. The extractor runs on either OpenAI or Anthropic through LangChain's structured-output interface (chosen by `EXTRACTOR_PROVIDER`, default OpenAI / `gpt-5-mini`, Anthropic / `claude-haiku-4-5`); nothing downstream depends on which.
 
 **Account data never enters the LLM context.** The lookup API hands the client the DOB, Aadhaar last 4, and pincode. Verification compares the user's claims against them in plain Python. If those values were in the prompt, a user could try to pull them out ("what DOB do you have on file?"). Kept out of the prompt, there is nothing to leak.
 
@@ -62,6 +68,8 @@ State is one dataclass held by the `Agent` instance: current state, the looked-u
 | 9 | Rejection wording | Failures never say which factor mismatched, so verification cannot be used as an oracle |
 | 10 | `next()` after close | Always returns a valid message; the conversation can end but cannot crash |
 | 11 | Payment retry limits | 3 rejected cards or 3 consecutive API outages close the session. Timeouts are exempt: the outcome is unknown, so retrying stays the user's call |
+
+The three retry limits in rows 4 and 11 are read from the environment (`MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, `MAX_API_FAILURES`), each defaulting to 3.
 
 ## Tradeoffs accepted
 

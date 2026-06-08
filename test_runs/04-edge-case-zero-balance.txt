@@ -1,0 +1,9 @@
+Payment collection agent. Type your message (Ctrl-C to exit).
+you: Hi
+agent: Hello! I can help you pay your outstanding balance. Please share your account ID to get started.
+you: my account id is Acc1003
+agent: Got it. Could you please confirm your full name?
+you: Im Priya, Priya Agarwal
+agent: Thanks. Could you verify one of: your date of birth, the last 4 digits of your Aadhaar, or your pincode?
+you: aadhaar digits are 2 4 6 8
+agent: Identity verified. Your outstanding balance is ₹0.00, so there's nothing to pay. Have a great day!

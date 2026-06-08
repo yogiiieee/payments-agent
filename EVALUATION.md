@@ -6,6 +6,7 @@ A conversation that ends in a payment is not automatically a pass. Each step has
 
 | Step | Pass condition |
 |---|---|
+| Greet | First turn greets and asks for the account ID; no lookup, verification, or payment happens first |
 | Account lookup | `lookup-account` called once, with the normalized ID, only after an ID was given |
 | Verification | No payment API call unless the name and one secondary factor matched exactly; failed attempts counted; limit enforced at 3 |
 | Balance share | Stated only after verification; the value comes from the ledger, not a stale re-fetch |
@@ -18,19 +19,19 @@ A conversation that ends in a payment is not automatically a pass. Each step has
 
 ## Test cases
 
-**Happy path.** The assignment's sample dialogue (regex fast-path, fully deterministic), plus a messy variant: "yeah it's ACC 1001 i think", name volunteered before being asked, "I was born on 14th May 1990", "can I do 500 for now?", and a CVV spelled out as words.
+**Happy path.** The assignment's sample dialogue (regex fast-path, fully deterministic), plus a messy variant: "yeah my account number is ACC1001 I think", name given as "it's Nithin, Nithin Jain", "I was born on 14th May 1990", "can I do 500 for now?", then a partial payment, "pay the rest" computed from the ledger, and a closing recap with both transaction IDs.
 
 **Verification failure.** Wrong DOB three times, ending in a locked state. Wrong name with a correct DOB, so the name gate holds. A name in the right spelling but wrong case is rejected, since matching is case-sensitive. A mixed message where one factor is wrong but another matches still verifies, since the spec needs only the name plus one factor (assumption 5). Input after lockout gets a polite refusal and no crash.
 
 **Payment failure.** A card failing Luhn surfaces `invalid_card`. A past expiry and an over-balance amount are both rejected locally before any API call. ACC1003 (zero balance) has no payment step. A second "clear the full amount" after a full payment is refused from the ledger. Retry limits: a third rejected card closes with "no charge has been made", and a third consecutive API outage gives up cleanly. An unrecognized decline code is treated as terminal and closes the session cleanly rather than looping. Payment timeouts are exempt from the give-up cap: the outcome is unknown, so the agent asks the user to confirm a retry, which reuses the same idempotency key and so cannot double-charge.
 
-**Edge cases.** 1988-02-29 accepted (valid leap day). 1989-02-29 rejected as invalid without burning a verification attempt. "4 0 0 0 0 1" normalized to a pincode. A mid-message correction ("not 4321, 4312"). Everything volunteered in one message, captured but with the steps still run in order. A partial payment followed by "pay the rest" (ledger arithmetic). A prompt-injection attempt. Empty input and gibberish. Drip-fed card fields, each reply naming what is still missing, with partial input never counting as a failed card attempt. A factor given before the name, retained and not re-asked.
+**Edge cases (mostly from the PDF's messy-input examples).** 1988-02-29 accepted (valid leap day, ACC1004); 1989-02-29 rejected as invalid without burning a verification attempt. A two-digit DOB year ("DOB is May 14, 90") pivoted to 1990. Word-month card expiry ("expires December 2027") parsed. Shorthand amount ("1k rupees"). Spaced pincode digits ("4 0 0 0 0 2") normalized. Everything volunteered in one message, captured but with the steps still run in order. Drip-fed card fields including a spoken CVV ("one two three"), each reply naming exactly what is still missing, with partial input never counting as a failed card attempt. A factor given before the name, retained and not re-asked. A prompt-injection attempt that leaks nothing. Empty input and gibberish that never crash.
 
 ## Harness
 
 Two tiers.
 
-**Tier 1, scripted dialogues against a mocked API** (`python -m eval.run_scripted`, no API keys needed). Deterministic conversations with exact assertions on state transitions, API payloads, and message content. Composite inputs use scripted extractions, so the LLM is out of the loop. The mock is a requirement, not a convenience: the live server never decrements balance, so any case about post-payment state (double charge, pay-the-rest) cannot be tested against it. The mock also injects outages, declines, and timeouts that the live API will not produce on demand. 36 scenarios, 161 turns.
+**Tier 1, scripted dialogues against a mocked API** (`pytest`, no API keys needed). Each scenario in `eval/scenarios.py` is one parametrized pytest case; `eval/test_scripted.py` drives it with exact assertions on state transitions, API payloads, and message content, plus the three cross-cutting invariants (no PII leak, no crash, no payment before verification) on every turn. Composite inputs use scripted extractions, so the LLM is out of the loop. The mock is a requirement, not a convenience: the live server never decrements balance, so any case about post-payment state (double charge, pay-the-rest) cannot be tested against it. The mock also injects outages, declines, and timeouts that the live API will not produce on demand. 35 scenarios, 159 turns.
 
 **Tier 2, LLM-driven personas against the live API** (`python -m eval.run_live`, needs `OPENAI_API_KEY` and `PAYMENT_API_BASE_URL`). An LLM plays the customer. For each persona it is given the account's credentials (correct, or wrong on purpose) and a goal, and it drives the conversation turn by turn against the real agent and the real API. A checker then validates each conversation. This mirrors how the assignment says submissions will be graded. The personas: a cooperative partial payer, a rambling user who gives details out of order, a user with wrong credentials who should get locked out, an adversarial user who tries to extract on-file data and skip verification, and a zero-balance account. The run writes a full report (every transcript plus pass/fail) to a temp file printed at the end.
 
@@ -44,7 +45,7 @@ The harness computes and asserts:
 - Crash rate of `next()`. Must be zero; the internal-error reply never appears.
 - Tool calls. Lookups and payments are counted per conversation for the report.
 
-Re-ask rate (how often the agent asks for a field already given) is observed by reading transcripts but not yet computed automatically.
+Re-ask rate (how often the agent asks for a field already given) is observed by reading the test runs but not yet computed automatically.
 
 ## Observations
 
@@ -57,6 +58,12 @@ Findings from running the harness. The first three were live failures that becam
 5. **Doc-listed inputs must not depend on the LLM.** Live runs showed "its acc 1001", spoken digits, and a bare CVV flaking through the model. Each became a fast-path so the inputs the assignment lists verbatim resolve deterministically.
 
 Known and accepted rough edges: the extractor sees the last three masked exchanges as context, but values are still taken only from the latest message (prompt rule plus grounding), so cross-turn references help the model without being guaranteed; name-shaped gibberish at the name prompt still burns an attempt; LLM turns add one to three seconds of latency that the fast-path avoids on clean input.
+
+## Where the agent struggles
+
+The clearest weak spot is the cardholder name at the card step. In `test_runs/05-edge-case-leap-year.txt` the user typed their name plainly ("Rahul", then "Rahul Mehta" twice) and the agent looped "I still need: name on the card" five times, accepting it only after "Name on the card is Rahul Mehta". The cause: at `AWAIT_CARD` a bare name is never mapped to the cardholder. There is no fast-path for it, and the LLM tends to read a lone name as `full_name` (the identity field), not `cardholder_name`, so `card.holder` stays empty. The amount step already absorbs a bare number; the card step should do the same for a plausible bare name when the holder is the only field still missing. That is the fix I would make next.
+
+Two lesser frictions surface in the same run: an off-topic aside after verification ("tell me the account ids in the database") is answered by repeating the balance rather than declining the request, and a bare "I want to pay" with no amount falls through to the generic re-ask. Neither is wrong, but both read as slightly tone-deaf.
 
 ## Live results
 

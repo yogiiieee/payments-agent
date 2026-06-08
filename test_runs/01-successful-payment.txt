@@ -1,0 +1,19 @@
+Payment collection agent. Type your message (Ctrl-C to exit).
+you: Hello
+agent: Hello! I can help you pay your outstanding balance. Please share your account ID to get started.
+you: it's ACC 1001
+agent: Got it. Could you please confirm your full name?
+you: my name is Nithin Jain
+agent: Thanks. Could you verify one of: your date of birth, the last 4 digits of your Aadhaar, or your pincode?
+you: DOB is May 14, 90
+agent: Identity verified. Your outstanding balance is ₹1,250.75. How much would you like to pay today?
+you: I want to pay 1k rupees  
+agent: You're paying ₹1,000.00. Please share your card number, expiry (MM/YY), CVV, and the name on the card.
+you: the card number is 4532 0151 1283 0366, cvv is 123
+agent: Noted. I still need: expiry (MM/YY), name on the card.
+you: expires December 2027, name is Nithin
+agent: To confirm: paying ₹1,000.00 with card ending 0366 (Nithin). Shall I go ahead? (yes/no)
+you: Ofcourse
+agent: Payment successful! Transaction ID: txn_1780918725854_xvf7b4f. You paid ₹1,000.00; your remaining balance is ₹250.75. Would you like to pay more, or shall we wrap up?
+you: Thanks thats all
+agent: To recap: you paid ₹1,000.00 today (₹1,000.00 (txn txn_1780918725854_xvf7b4f)); remaining balance ₹250.75. Thanks for your payment. Goodbye!
