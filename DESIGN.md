@@ -2,14 +2,14 @@
 
 ## Architecture
 
-The agent is a deterministic state machine with an LLM attached as a parser. Every call to `Agent.next()` runs the same pipeline:
+The agent is a rule-driven state machine; the LLM is used only to read the user's messages. Every `Agent.next()` call runs the same pipeline:
 
 ```mermaid
 graph TD
-    IN([user message]) --> S1["1. Card pre-pass - mask PAN/CVV at the edge"]
+    IN([user message]) --> S1["1. Card pre-pass - mask card number and CVV"]
     S1 --> S2["2. Extraction - fast-path regex, else LLM"]
     S2 --> S3["3. Validation - dates, Luhn, lengths, grounding"]
-    S3 --> S4["4. State machine - dispatch table, strict match, ledger"]
+    S3 --> S4["4. State machine - per-state handlers, strict match, ledger"]
     S4 --> S5["5. Response - fixed template per state and event"]
     S5 --> OUT([returns message dict])
     S2 -->|parse| LLM["LLM - OpenAI or Anthropic via LangChain"]
@@ -33,43 +33,54 @@ The LLM has one job: step 2, turning "yeah my account number is ACC 1001 I think
 
 State is one dataclass held by the `Agent` instance: current state, the looked-up account record (a validated typed model, not a raw dict), the user's identity claims, retry counters, a payment ledger, and (briefly) card details. Each turn is dispatched to a small per-state handler, and one message may advance several states in the same turn (an amount and a card arriving together) without re-asking.
 
-## Key decisions
+## Key Decisions
 
-**LLM for extraction, code for everything else.** Regex alone cannot read "I want to pay a thousand rupees" or pick the name out of "you can call me Raja but my full name is Rajarajeswari Balasubramaniam", and the evaluator is an LLM playing varied users, so input variety is open-ended. A pure-LLM agent fails the other way: models fuzzy-match names by default, and a prompt rule like "do not skip verification" can be argued around. Splitting the roles keeps the flexible part flexible and the strict part strict. The extractor runs on either OpenAI or Anthropic through LangChain's structured-output interface (chosen by `EXTRACTOR_PROVIDER`, default OpenAI / `gpt-5-mini`, Anthropic / `claude-haiku-4-5`); nothing downstream depends on which.
+- **LLM for extraction, code for everything else.**
+  Regex can't parse "I want to pay a thousand rupees," but a pure-LLM agent fuzzy-matches names and can be talked out of its own rules. So the flexible parsing stays in the LLM and the strict checks stay in code.
 
-**Account data never enters the LLM context.** The lookup API hands the client the DOB, Aadhaar last 4, and pincode. Verification compares the user's claims against them in plain Python. If those values were in the prompt, a user could try to pull them out ("what DOB do you have on file?"). Kept out of the prompt, there is nothing to leak.
+- **Two layers of parsing: a regex fast-path, then the LLM.**
+  Step 2 tries fixed regex patterns first and only calls the LLM when they miss. Obvious inputs (a bare `ACC1001`, a date, spaced or spoken digits, a plain yes/no) never reach the model; only messy phrasing does. This keeps the assignment's examples reproducible, lets clean conversations run with no API key, and saves a call on the easy turns.
 
-**Where extraction ends and exact matching begins.** The rules forbid fuzzy matching, but real input is spoken-style, so a line was drawn. Extraction strips only what is clearly not identity: surrounding words ("it's", "my name is"), repeated spacing, and date formatting. Name matching is then case-sensitive exact equality, because the assignment forbids case-insensitive name matching. "it's Nithin, Nithin Jain" becomes "Nithin Jain" and matches; "Nitin Jain" (misspelled) fails, and so does "nithin jain" (wrong case). No edit distance, no phonetics, no case folding. The cost is that a user who types their name in the wrong case is asked again, which the strict reading of the rule accepts.
+- **Account data never enters the LLM context.**
+  The DOB, Aadhaar last 4, and pincode are compared against the user's claims in plain Python. If they were in the prompt, a user could just ask the model to read them back.
 
-**A client-side payment ledger.** The server never persists balance updates, which quietly puts balance correctness on the agent. Re-fetching after a payment returns the original balance, so "now clear the rest" would overcharge and a repeated "pay the full amount" would double-charge. The agent records each successful payment and computes the remaining balance itself. This state lives and dies with the conversation, which matches a server that forgets too.
+- **Where extraction stops and exact matching starts.**
+  Extraction strips only the obvious non-identity words ("it's", "my name is", extra spaces); names are then matched with exact, case-sensitive equality. So "it's Nithin, Nithin Jain" matches, but a misspelling or wrong case is asked again, which the strict reading of the rules allows.
 
-**Idempotent payments, and terminal vs retryable failures.** Each charge carries an idempotency key, generated once and reused across any retry, so a payment that times out can be retried on the user's "confirm" without risking a double charge. The key is cleared once the charge settles or its parameters change, so a genuine second payment is never read as a duplicate. Declines are then split by who can fix them: a bad card, CVV, or expiry is user-fixable and re-collects the card; an over-balance or malformed amount re-asks the amount; an unrecognized code is treated as terminal and the session closes cleanly instead of looping.
+- **An in-session payment ledger.**
+  The server never saves balance updates, so re-fetching after a payment returns the original amount and "pay the rest" would overcharge. The agent tracks each payment and works out the remaining balance itself.
 
-**Card data is masked at the edge.** A regex pre-pass captures card-number and CVV digits before the message is stored. History keeps "card ending 0366", and the real values sit in one short-lived field that is wiped after the payment call. One residual: a card number spelled out in words passes through a single extraction call before masking. The real fix is to take card capture out of the chat channel, which this interface does not allow, so the limit is named rather than hidden.
+- **Idempotent payments, and terminal vs. retryable failures.**
+  Each charge reuses one idempotency key (an ID the server uses to ignore duplicate charges) across retries, so a timed-out payment can be retried safely and a genuine second payment isn't mistaken for a duplicate. Declines are split by who can fix them: bad card details re-collect the card, a bad amount re-asks the amount, and an unknown code closes the session instead of looping.
 
-**Grounding check on extracted values.** Models sometimes return a value that was never said. Every identity and card digit field (account ID, Aadhaar 4, pincode, card) must appear in the message after digit normalization, and names must appear as a case-insensitive substring. Anything that fails is treated as not provided. Amount is the exception: shorthand like "1k" or "a thousand" has no digits to match, and the confirmation step shows the amount before any charge, so that is the safeguard instead.
+- **Card data is masked on input.**
+  A regex catches card and CVV digits before the message is stored, so history keeps only "card ending 0366" while the real values sit in a short-lived field that is wiped after the call. One gap is named openly rather than hidden: a card number spelled out in words slips through a single extraction call first, and the real fix (taking card capture out of chat) isn't possible here.
 
-**The LLM extracts, it does not infer.** The extractor pulls only what is literally present and never computes or guesses, and it never sees the balance. One consequence: "pay half" or "a quarter of it" goes nowhere, because "half" carries no number and resolving it would need both the balance and arithmetic the LLM is denied. This is a real limit, and a cheap one to lift later: classify the fraction in the LLM (`fraction: 0.5`) and let code multiply it by the remaining balance, the same way `pay_full` already resolves to `remaining`. It is left out because "pay half" is uncommon and adding it now would be guesswork. The seam is clean.
+- **Grounding: extracted values must appear in the message.**
+  Every digit field and name must actually show up in the user's text, or it is treated as not provided, since models sometimes invent values. Amount is the exception, because "1k" has no digits to match and the confirmation step catches a wrong amount instead.
 
-**Determinism, stated honestly.** Byte-identical output across runs is not possible with an LLM in the loop. What the design guarantees is policy determinism: the same extracted facts always produce the same transitions and API calls. A regex fast-path also skips the LLM for clean inputs like `ACC1001` or `1990-05-14`, which makes the assignment's sample dialogue fully reproducible.
+- **The LLM extracts, it does not infer.**
+  It pulls only what is literally said and never does math, so "pay half" goes nowhere: resolving it would need the balance and arithmetic the LLM isn't given. It could be added later (let the LLM name the fraction, let code multiply), but it is left out as uncommon and guesswork today.
+
+- **Determinism, stated honestly.**
+  Byte-for-byte identical output isn't possible with an LLM in the loop, but the same extracted facts always produce the same transitions and API calls. The regex fast-path also skips the LLM entirely for clean inputs like `ACC1001`, so the sample dialogue stays fully reproducible.
 
 ## Assumptions
 
-| # | Ambiguity | Resolution |
-|---|---|---|
-| 1 | Name case and spacing | Spacing is normalized; case is significant, since the spec forbids case-insensitive name matching, so a wrong-case name is a mismatch |
-| 2 | Ambiguous numeric dates ("03-04-1990") | Read as DD-MM (Indian locale); unambiguous forms taken as written |
-| 3 | Two-digit years | DOB pivots to the past ("May 14, 90" is 1990); card expiry to the future ("12/27" is 2027) |
-| 4 | Verification retry limit | 3 failed attempts, then a terminal locked state; later input gets a polite refusal, never a crash |
-| 5 | Mixed factors in one message | Name plus at least one matching factor verifies, as the spec states; a wrong factor alongside a correct one does not block verification |
-| 6 | ACC1003 has a zero balance | Tell the user nothing is outstanding and close; card collection is skipped |
-| 7 | Amount collection | Not in the 8 listed steps; inserted between sharing the balance and collecting the card |
-| 8 | Confirmation before charging | Added ("pay 500 with card ending 0366, confirm?"); the spec neither requires nor forbids it |
-| 9 | Rejection wording | Failures never say which factor mismatched, so verification cannot be used as an oracle |
-| 10 | `next()` after close | Always returns a valid message; the conversation can end but cannot crash |
-| 11 | Payment retry limits | 3 rejected cards or 3 consecutive API outages close the session. Timeouts are exempt: the outcome is unknown, so retrying stays the user's call |
+Listed here are only the genuine ambiguities: places where the spec is silent or explicitly leaves the choice to us. Behavior that just follows a stated rule (strict case-sensitive names) or the interface contract (`next()` never crashes) is not an assumption and is omitted.
 
-The three retry limits in rows 4 and 11 are read from the environment (`MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, `MAX_API_FAILURES`), each defaulting to 3.
+| #   | Ambiguity                              | Resolution                                                                                                                                                         |
+| --- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | No data persistence.                   | As per the doc, an evaluator will run on the code. Thus I've chosen to not persist transactions and keep each session independent                                  |
+| 2   | Ambiguous numeric dates ("03-04-1990") | Read as DD-MM (Indian locale); unambiguous forms taken as written                                                                                                  |
+| 3   | Two-digit years                        | DOB pivots to the past ("May 14, 90" is 1990); card expiry to the future ("12/27" is 2027)                                                                         |
+| 4   | Verification retry limit               | The spec says to pick one: 3 failed attempts, then a terminal locked state; later input gets a polite refusal, never a crash                                       |
+| 5   | Mixed factors in one message           | Name plus at least one matching factor verifies, as the spec states; a wrong factor alongside a correct one does not block verification                            |
+| 6   | Amount collection                      | Not in the 8 listed steps; inserted between sharing the balance and collecting the card                                                                            |
+| 7   | Confirmation before charging           | Added ("pay 500 with card ending 0366, confirm?"); the spec neither requires nor forbids it                                                                        |
+| 8   | Payment retry limits                   | The spec says split retryable from terminal: 3 rejected cards or 3 consecutive API outages close the session, but timeouts are exempt since the outcome is unknown |
+
+The three retry limits in rows 4 and 8 are read from the environment (`MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, `MAX_API_FAILURES`), each defaulting to 3.
 
 ## Tradeoffs accepted
 
@@ -77,4 +88,6 @@ One LLM call per turn adds latency and cost, which the fast-path trims on clean 
 
 ## With more time
 
-Verification belongs on the server, behind an API that answers yes or no instead of handing the client the answers. A persisted transaction store would let a fresh session reconcile past payments and survive a crash mid-conversation. The persona evaluator could grow further: multilingual input, sustained injection attempts, and users who change their mind mid-payment.
+- Replace the rigid state machine with a guardrailed, fine-tuned in-house model, so customer data never leaves our own infrastructure.
+- Improve code quality.
+- Test on more real edge cases.

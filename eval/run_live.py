@@ -3,18 +3,17 @@
 For each persona the LLM is given the account's credentials (correct, or wrong on
 purpose) and a goal, and it drives the conversation turn by turn. A checker then
 validates the conversation against the invariants (no PII leak, no crash, no payment
-without verification, plus the outcome the persona should reach). Results are written
-to a temp file.
+without verification, plus the outcome the persona should reach). The report is written
+to eval/last_live_run.md in the repo.
 
 Usage: python -m eval.run_live   (needs PAYMENT_API_BASE_URL and the API key for the
 chosen provider). EVAL_USER_PROVIDER (openai | anthropic) and EVAL_USER_MODEL pick the
 customer model; the agent's extractor follows EXTRACTOR_PROVIDER / EXTRACTOR_MODEL.
-Set EVAL_OUTPUT to choose the results path.
+Set EVAL_OUTPUT to override the report path.
 """
 
 import os
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -31,6 +30,7 @@ CRASH = TEMPLATES[Msg.INTERNAL_ERROR]
 ACC = {a["account_id"]: a for a in ACCOUNTS}
 CARD = "4532 0151 1283 0366, expiry 12/27, cvv 123"
 MAX_TURNS = 14
+DEFAULT_OUTPUT = Path(__file__).resolve().parent / "last_live_run.md"
 
 USER_SYSTEM = (
     "You are role-playing a CUSTOMER in a chat with an automated payment-collection "
@@ -265,7 +265,7 @@ def main() -> int:
     descriptor = (f"Customer: {user_provider}/{user_model}. "
                   f"Agent extractor: {extractor.provider}/{extractor.model}. Live API.")
 
-    out = Path(os.getenv("EVAL_OUTPUT") or (Path(tempfile.gettempdir()) / "payments_agent_live_eval.md"))
+    out = Path(os.getenv("EVAL_OUTPUT") or DEFAULT_OUTPUT)
     results = []
     for persona in PERSONAS:
         print(f"  running {persona.name} ...", flush=True)

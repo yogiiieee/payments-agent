@@ -35,7 +35,14 @@ cp .env.sample .env                    # fill in OPENAI_API_KEY; PAYMENT_API_BAS
 
 `.env` loads automatically (python-dotenv) whenever the `payment_agent` package is imported, so the CLI, both evals, and `from agent import Agent` all pick it up. Real environment variables take precedence over `.env`.
 
-The `Agent` constructor takes no arguments, as the assignment fixes, so all config comes from the environment. See `.env.sample` for the full list. `PAYMENT_API_BASE_URL` is required and the client refuses to construct without it. LLM extraction runs on OpenAI by default (`OPENAI_API_KEY`); set `EXTRACTOR_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` to use Claude instead. The model defaults to `gpt-5-mini` or `claude-haiku-4-5` per provider; override either with `EXTRACTOR_MODEL`. The three retry limits are required and read from the environment (`MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, `MAX_API_FAILURES`); `.env.sample` ships them at 3. Clean, well-formatted inputs like the sample dialogue are handled by a regex fast-path and need no LLM key.
+The `Agent` constructor takes no arguments (fixed by the assignment), so all config comes from the environment; `.env.sample` lists everything.
+
+- `PAYMENT_API_BASE_URL` is required; the client will not start without it.
+- Extraction uses OpenAI by default (`OPENAI_API_KEY`). Set `EXTRACTOR_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` to use Claude.
+- The model defaults to `gpt-5-mini` or `claude-haiku-4-5` per provider; override with `EXTRACTOR_MODEL`.
+- `MAX_VERIFY_ATTEMPTS`, `MAX_CARD_ATTEMPTS`, and `MAX_API_FAILURES` are required; `.env.sample` ships them at 3.
+
+Clean inputs like the sample dialogue use the regex fast-path and need no LLM key.
 
 ## Run
 
@@ -56,6 +63,7 @@ print(agent.next("My account ID is ACC1001"))
 
 ## Test accounts
 
+
 | Account ID | Full name                     | DOB        | Aadhaar last 4 | Pincode | Balance   |
 | ---------- | ----------------------------- | ---------- | -------------- | ------- | --------- |
 | ACC1001    | Nithin Jain                   | 1990-05-14 | 4321           | 400001  | ₹1,250.75 |
@@ -63,19 +71,24 @@ print(agent.next("My account ID is ACC1001"))
 | ACC1003    | Priya Agarwal                 | 1992-08-10 | 2468           | 400003  | ₹0.00     |
 | ACC1004    | Rahul Mehta                   | 1988-02-29 | 1357           | 400004  | ₹3,200.50 |
 
+
 Two of these are quiet edge cases. 1988 is a leap year, so ACC1004's DOB 1988-02-29 is valid and the agent accepts it; a nearby invalid date like 1989-02-29 is rejected at parse time and does not count as a verification mismatch. ACC1003 has no balance, so the agent reports nothing is outstanding and closes without collecting card details.
 
 ## Assumptions and limitations
 
-Short version. The reasoning behind each is in [DESIGN.md](DESIGN.md):
+Short version; the full reasoning is in [DESIGN.md](DESIGN.md).
 
-- The test server never persists balance updates, so the agent keeps an in-session ledger (payments made, remaining balance) to prevent double charges and to compute "pay the rest". Payments are not recoverable across sessions.
-- Verification matching is case-sensitive exact equality after normalizing spacing and date format. No edit distance and no case folding, since the assignment forbids case-insensitive name matching, so a name in the wrong case is treated as a mismatch. A user is verified by the full name plus at least one matching secondary factor (DOB, Aadhaar last 4, or pincode).
-- Three failed verification attempts end the session, as do three rejected cards or three consecutive API outages. An unrecognized payment decline is treated as terminal and closes the session cleanly. Further input gets a polite refusal.
-- Each payment carries an idempotency key, reused across a retry, so a timed-out charge can be retried on the user's confirmation without a double charge. The interactive CLI exits once the conversation is closed or locked.
-- Ambiguous numeric dates are read as DD-MM.
-- Rejection messages never reveal which factor mismatched, and account data (DOB, Aadhaar, pincode) is never placed in the LLM context or echoed to the user.
-- Raw card data is masked in conversation history and held only until the payment call completes.
+**Assumptions** (where the spec is silent or leaves the choice open):
+
+- Ambiguous numeric dates are read as DD-MM; two-digit years pivot (DOB to the past, card expiry to the future).
+- Verification needs the full name plus at least one matching secondary factor (DOB, Aadhaar last 4, or pincode); a wrong factor alongside a correct one still verifies.
+- An amount step and a confirmation step were inserted between the spec's listed steps.
+- Retry limits, read from the environment: three failed verifications, three rejected cards, or three consecutive API outages each close the session, and an unrecognized decline code is treated as terminal.
+
+**Limitations:**
+
+- Verification is case-sensitive exact equality, with no edit distance and no case folding, as the spec requires, so a name in the wrong case is treated as a mismatch.
+- Account data (DOB, Aadhaar, pincode) never enters the LLM context or a reply, rejection messages never reveal which factor mismatched, and raw card data is masked in history and dropped after the payment call.
 
 ## Evaluation
 
