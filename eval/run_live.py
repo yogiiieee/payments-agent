@@ -6,8 +6,10 @@ validates the conversation against the invariants (no PII leak, no crash, no pay
 without verification, plus the outcome the persona should reach). Results are written
 to a temp file.
 
-Usage: python -m eval.run_live   (needs OPENAI_API_KEY and PAYMENT_API_BASE_URL)
-Set EVAL_OUTPUT to choose the results path; EVAL_USER_MODEL to change the customer model.
+Usage: python -m eval.run_live   (needs PAYMENT_API_BASE_URL and the API key for the
+chosen provider). EVAL_USER_PROVIDER (openai | anthropic) and EVAL_USER_MODEL pick the
+customer model; the agent's extractor follows EXTRACTOR_PROVIDER / EXTRACTOR_MODEL.
+Set EVAL_OUTPUT to choose the results path.
 """
 
 import os
@@ -20,6 +22,7 @@ from pathlib import Path
 
 from agent import Agent  # noqa: E402 — imports load .env
 from payment_agent.api_client import Account, ApiClient  # noqa: E402
+from payment_agent.extraction import _DEFAULT_MODEL, LLMExtractor  # noqa: E402
 from payment_agent.templates import TEMPLATES, Msg  # noqa: E402
 
 from .mock_api import ACCOUNTS  # noqa: E402
@@ -34,7 +37,9 @@ USER_SYSTEM = (
     "agent. Stay in character for the persona you are given. Output ONLY your next "
     "chat message as the customer: no quotes, no narration, no labels. Keep it short "
     "and natural, the way people actually type. Share details only when the agent asks "
-    "for them, unless your persona says otherwise. When the agent has clearly finished "
+    "for them, unless your persona says otherwise. When you share identifying details "
+    "(name, date of birth, Aadhaar, pincode), type them exactly as written in your "
+    "details, with the same spelling and capitalization. When the agent has clearly finished "
     "(payment confirmed and recapped, or the session is closed or locked), reply with "
     "just the single word: DONE"
 )
@@ -182,7 +187,7 @@ def run_persona(client, persona: Persona) -> dict:
     }
 
 
-def _write_report(results: list[dict], path: Path) -> None:
+def _write_report(results: list[dict], path: Path, descriptor: str) -> None:
     passed = sum(1 for r in results if not r["failures"])
     total_payments = sum(r["payments"] for r in results)
     total_calls = sum(r["lookups"] + r["payments"] for r in results)
@@ -192,8 +197,7 @@ def _write_report(results: list[dict], path: Path) -> None:
     lines = [
         "# Tier 2 live evaluation (LLM-driven personas)",
         "",
-        f"Customer model: {os.getenv('EVAL_USER_MODEL', 'gpt-5-mini')}. Agent extractor: "
-        f"{os.getenv('EXTRACTOR_MODEL', 'gpt-5-mini')}. Live API.",
+        descriptor,
         "",
         "## Summary",
         "",
@@ -224,12 +228,42 @@ def _write_report(results: list[dict], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def main() -> int:
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY is required for the live persona evaluation.")
-        return 1
+def _chat_model(provider: str, model: str):
+    """LangChain chat client for the customer simulator (OpenAI or Anthropic)."""
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=model, timeout=20, max_retries=2)
     from langchain_openai import ChatOpenAI
-    client = ChatOpenAI(model=os.getenv("EVAL_USER_MODEL", "gpt-5-mini"), timeout=20, max_retries=2)
+    return ChatOpenAI(model=model, timeout=20, max_retries=2)
+
+
+def _resolve(provider_env: str, model_env: str) -> tuple[str, str]:
+    """(provider, model) from env, defaulting the model per provider; unknown -> openai."""
+    provider = (os.getenv(provider_env) or "openai").lower()
+    if provider not in _DEFAULT_MODEL:
+        provider = "openai"
+    return provider, os.getenv(model_env) or _DEFAULT_MODEL[provider]
+
+
+def _key_for(provider: str) -> str:
+    return "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+
+
+def main() -> int:
+    user_provider, user_model = _resolve("EVAL_USER_PROVIDER", "EVAL_USER_MODEL")
+    extractor = LLMExtractor()  # same provider/model the Agent will use for extraction
+    needed = {_key_for(user_provider), _key_for(extractor.provider)}
+    missing = sorted(k for k in needed if not os.getenv(k))
+    if missing:
+        print(f"Missing API key(s) for the live evaluation: {', '.join(missing)}.")
+        return 1
+    if not os.getenv("PAYMENT_API_BASE_URL"):
+        print("PAYMENT_API_BASE_URL is required for the live evaluation.")
+        return 1
+
+    client = _chat_model(user_provider, user_model)
+    descriptor = (f"Customer: {user_provider}/{user_model}. "
+                  f"Agent extractor: {extractor.provider}/{extractor.model}. Live API.")
 
     out = Path(os.getenv("EVAL_OUTPUT") or (Path(tempfile.gettempdir()) / "payments_agent_live_eval.md"))
     results = []
@@ -237,7 +271,7 @@ def main() -> int:
         print(f"  running {persona.name} ...", flush=True)
         results.append(run_persona(client, persona))
 
-    _write_report(results, out)
+    _write_report(results, out, descriptor)
     passed = sum(1 for r in results if not r["failures"])
     print(f"\n  {passed}/{len(results)} conversations passed")
     print(f"  full report: {out}")
