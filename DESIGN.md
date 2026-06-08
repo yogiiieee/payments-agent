@@ -56,6 +56,9 @@ State is one dataclass held by the `Agent` instance: current state, the looked-u
 - **Card data is masked on input.**
   A regex catches card and CVV digits before the message is stored, so history keeps only "card ending 0366" while the real values sit in a short-lived field that is wiped after the call. One gap is named openly rather than hidden: a card number spelled out in words slips through a single extraction call first, and the real fix (taking card capture out of chat) isn't possible here.
 
+- **Logging is observable but PII-safe.**
+  The agent writes a structured log (`payment_agent.log`) of states, intents, attempt counts, API calls, masked card last-4, amounts, transaction IDs, and error codes. Raw user messages, names, DOB, Aadhaar, pincode, and full card / CVV / expiry never reach it, honoring the assignment's rule against logging raw card data or exposing account data.
+
 - **Grounding: extracted values must appear in the message.**
   Every digit field and name must actually show up in the user's text, or it is treated as not provided, since models sometimes invent values. Amount is the exception, because "1k" has no digits to match and the confirmation step catches a wrong amount instead.
 

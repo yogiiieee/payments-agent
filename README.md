@@ -44,6 +44,8 @@ The `Agent` constructor takes no arguments (fixed by the assignment), so all con
 
 Clean inputs like the sample dialogue use the regex fast-path and need no LLM key.
 
+Logging is always on: the agent writes `payment_agent.log` in the repo root, recording states, API calls, and outcomes only, never card data or account PII.
+
 ## Run
 
 Interactive:

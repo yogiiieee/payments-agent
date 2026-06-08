@@ -1,5 +1,6 @@
 """States, transitions, verification, and the payment ledger."""
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ from .validators import (
 MAX_VERIFY_ATTEMPTS = abs(int(os.environ["MAX_VERIFY_ATTEMPTS"]))
 MAX_CARD_ATTEMPTS = abs(int(os.environ["MAX_CARD_ATTEMPTS"]))
 MAX_API_FAILURES = abs(int(os.environ["MAX_API_FAILURES"]))
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -361,6 +364,7 @@ def _verify_progress(s: Session) -> tuple[Msg, dict]:
     if not any(v == getattr(account, k) for k, v in provided.items()):
         return _fail_attempt(s)
     s.verified = True  # name plus at least one matching factor, per the spec
+    logger.info("verification passed for %s", account.account_id)
     return _share_balance(s)
 
 
@@ -369,7 +373,9 @@ def _fail_attempt(s: Session) -> tuple[Msg, dict]:
     s.claims.clear()  # wrong values must not linger into the next attempt
     if s.verify_attempts >= MAX_VERIFY_ATTEMPTS:
         s.state = State.LOCKED
+        logger.warning("session locked after %d failed verification attempts", s.verify_attempts)
         return Msg.LOCKED, {}
+    logger.info("verification failed (attempt %d/%d)", s.verify_attempts, MAX_VERIFY_ATTEMPTS)
     s.state = State.AWAIT_NAME
     return Msg.VERIFY_FAILED, {"attempts_left": MAX_VERIFY_ATTEMPTS - s.verify_attempts}
 
@@ -379,7 +385,9 @@ def _card_failure(s: Session, key: Msg, kwargs: dict | None = None) -> tuple[Msg
     s.card_attempts += 1
     if s.card_attempts >= MAX_CARD_ATTEMPTS:
         s.state = State.CLOSED
+        logger.warning("session closed: %d card attempts exhausted", s.card_attempts)
         return Msg.CARD_ATTEMPTS_EXHAUSTED, {}
+    logger.info("card rejected (attempt %d/%d)", s.card_attempts, MAX_CARD_ATTEMPTS)
     return key, kwargs or {}
 
 
@@ -387,7 +395,9 @@ def _api_failure(s: Session) -> tuple[Msg, dict]:
     s.api_failures += 1
     if s.api_failures >= MAX_API_FAILURES:
         s.state = State.CLOSED
+        logger.warning("session closed: API gave up after %d consecutive failures", s.api_failures)
         return Msg.API_GIVE_UP, {}
+    logger.warning("API unavailable (failure %d/%d)", s.api_failures, MAX_API_FAILURES)
     return Msg.API_UNAVAILABLE, {}
 
 
@@ -445,6 +455,7 @@ def _process_payment(s: Session, api: PaymentApi) -> tuple[Msg, dict]:
         return _declined(s, exc.error_code)
     except PaymentOutcomeUnknown:
         # keep the key so a confirm-retry can't double-charge a payment that may have landed
+        logger.warning("payment outcome unknown (timeout); idempotency key retained")
         return Msg.PAYMENT_UNKNOWN, {}
     except APIUnavailable:
         return _api_failure(s)
@@ -456,6 +467,7 @@ def _process_payment(s: Session, api: PaymentApi) -> tuple[Msg, dict]:
     s.card_attempts = 0  # fresh budget for a possible next payment
     s.api_failures = 0
     s.state = State.POST_PAYMENT
+    logger.info("payment settled: %s amount=%s txn=%s", s.account.account_id, amount, txn_id)
     if s.remaining <= 0:
         return Msg.PAYMENT_SUCCESS_CLEARED, {"txn_id": txn_id, "amount": inr(amount)}
     return Msg.PAYMENT_SUCCESS, {"txn_id": txn_id, "amount": inr(amount),
@@ -468,13 +480,16 @@ def _declined(s: Session, code: str) -> tuple[Msg, dict]:
     if code in ("invalid_card", "invalid_cvv", "invalid_expiry"):
         s.card.wipe()
         s.state = State.AWAIT_CARD  # user-fixable card problem: re-collect the card
+        logger.info("payment declined (%s): re-collecting card", code)
         return _card_failure(s, Msg(f"declined_{code}"), kwargs)
     if code in ("insufficient_balance", "invalid_amount"):
         s.amount = None
         s.state = State.AWAIT_AMOUNT  # user-fixable: re-ask the amount
+        logger.info("payment declined (%s): re-asking amount", code)
         return Msg(f"declined_{code}"), kwargs
     # an unrecognized decline is not something the user can fix: close cleanly
     s.state = State.CLOSED
+    logger.warning("payment declined (%s): terminal, closing session", code)
     return Msg.DECLINED_TERMINAL, {"code": code}
 
 
@@ -483,6 +498,8 @@ def _close(s: Session) -> tuple[Msg, dict]:
     if s.ledger:
         total = sum((a for a, _ in s.ledger), Decimal("0"))
         details = "; ".join(f"{inr(a)} (txn {t})" for a, t in s.ledger)
+        logger.info("session closed after %d payment(s)", len(s.ledger))
         return Msg.RECAP_CLOSE, {"total": inr(total), "details": details,
                                "remaining": inr(s.remaining)}
+    logger.info("session closed with no payment")
     return Msg.CLOSE_NO_PAYMENT, {}

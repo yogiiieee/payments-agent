@@ -1,11 +1,14 @@
 """HTTP client for the lookup and payment endpoints."""
 
+import logging
 import os
 from decimal import Decimal
 from typing import Any, Protocol
 
 import requests
 from pydantic import BaseModel, ValidationError, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class Account(BaseModel):
@@ -62,6 +65,7 @@ class ApiClient:
         self.session = requests.Session()
 
     def lookup_account(self, account_id: str) -> Account:
+        logger.info("lookup-account account_id=%s", account_id)
         last_exc: Exception | None = None
         for _ in range(3):  # lookup is read-only, safe to retry
             try:
@@ -74,15 +78,19 @@ class ApiClient:
                 last_exc = exc
                 continue
             if resp.status_code == 404:
+                logger.info("lookup-account account_id=%s -> 404 not found", account_id)
                 raise AccountNotFound(account_id)
             if resp.status_code == 200:
                 try:
-                    return Account.model_validate(resp.json())
+                    account = Account.model_validate(resp.json())  # response body is never logged
                 except (ValueError, ValidationError) as exc:
                     raise APIUnavailable("malformed lookup response") from exc
+                logger.info("lookup-account account_id=%s -> 200 ok", account_id)
+                return account
             if resp.status_code < 500:
                 raise APIUnavailable(f"unexpected status {resp.status_code}")
             last_exc = APIUnavailable(f"server error {resp.status_code}")
+        logger.warning("lookup-account account_id=%s failed after retries", account_id)
         raise APIUnavailable("lookup failed") from last_exc
 
     def process_payment(self, account_id: str, amount: Decimal, card: dict,
@@ -104,6 +112,9 @@ class ApiClient:
         # Idempotency key so a retry (e.g. after a timeout) can't double-charge.
         # Will work if it is addressed by the server, but an ideal payment route must send
         headers = {"Idempotency-Key": idempotency_key}
+        last4 = (card.get("number") or "")[-4:] or "????"  # masked: full PAN/CVV never logged
+        logger.info("process-payment account_id=%s amount=%s card=ending-%s idempotency_key=%s",
+                    account_id, amount, last4, idempotency_key)
         last_timeout: Exception | None = None
         for _ in range(2):
             try:
@@ -115,8 +126,20 @@ class ApiClient:
                 last_timeout = exc
                 continue
             except requests.RequestException as exc:
+                logger.warning("process-payment account_id=%s request failed", account_id)
                 raise APIUnavailable("payment request failed") from exc
-            return self._read_payment(resp)
+            try:
+                txn_id = self._read_payment(resp)
+            except PaymentDeclined as exc:
+                logger.info("process-payment account_id=%s -> declined (%s)",
+                            account_id, exc.error_code)
+                raise
+            except APIUnavailable:
+                logger.warning("process-payment account_id=%s -> unexpected response", account_id)
+                raise
+            logger.info("process-payment account_id=%s -> success txn=%s", account_id, txn_id)
+            return txn_id
+        logger.warning("process-payment account_id=%s timed out; outcome unknown", account_id)
         raise PaymentOutcomeUnknown() from last_timeout
 
     @staticmethod

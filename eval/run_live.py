@@ -232,7 +232,7 @@ def _chat_model(provider: str, model: str):
     """LangChain chat client for the customer simulator (OpenAI or Anthropic)."""
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model, timeout=20, max_retries=2)
+        return ChatAnthropic(model=model, timeout=20, max_retries=2)  # type: ignore[call-arg]
     from langchain_openai import ChatOpenAI
     return ChatOpenAI(model=model, timeout=20, max_retries=2)
 
