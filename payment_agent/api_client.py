@@ -9,8 +9,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 
 class Account(BaseModel):
-    """Validated shape of the lookup-account response, so the state machine reads
-    typed attributes instead of a raw dict and a malformed response fails at the edge."""
+    """Validated lookup-account response: typed access, malformed payloads fail at the edge."""
 
     account_id: str
     full_name: str
@@ -102,8 +101,8 @@ class ApiClient:
                 },
             },
         }
-        # The idempotency key lets the server collapse a duplicate request, so a
-        # retry after a timeout is safe and cannot charge the card twice.
+        # Idempotency key so a retry (e.g. after a timeout) can't double-charge.
+        # Will work if it is addressed by the server, but an ideal payment route must send
         headers = {"Idempotency-Key": idempotency_key}
         last_timeout: Exception | None = None
         for _ in range(2):

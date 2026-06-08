@@ -38,7 +38,6 @@ def _mask_card_data(text: str) -> tuple[str, str | None, str | None]:
 class Agent:
     def __init__(self, api_client: PaymentApi | None = None,
                  extractor: Extractor | None = None):
-        # kwargs exist for test injection; Agent() stays valid per the spec
         self.api: PaymentApi = api_client or ApiClient()
         self.extractor: Extractor = extractor or LLMExtractor()
         self.session = Session()
@@ -75,7 +74,7 @@ class Agent:
             if ext is None:
                 if not (pan or cvv):
                     return render(Msg.FALLBACK, next_prompt=prompt_for(s))
-                ext = Extraction()  # extractor down, but the pre-pass found card data
+                ext = Extraction()
             else:
                 ext = ground(ext, masked)
         # pre-pass values are literal; they outrank anything the LLM produced

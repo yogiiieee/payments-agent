@@ -1,5 +1,6 @@
-"""States, transitions, verification, and the payment ledger. No LLM in this file."""
+"""States, transitions, verification, and the payment ledger."""
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -31,9 +32,9 @@ from .validators import (
     words_to_digits,
 )
 
-MAX_VERIFY_ATTEMPTS = 3
-MAX_CARD_ATTEMPTS = 3   # rejected cards (local or declined) before closing — no charge made
-MAX_API_FAILURES = 3    # consecutive outages before giving up; timeouts excluded (outcome unknown)
+MAX_VERIFY_ATTEMPTS = abs(int(os.environ["MAX_VERIFY_ATTEMPTS"]))
+MAX_CARD_ATTEMPTS = abs(int(os.environ["MAX_CARD_ATTEMPTS"]))
+MAX_API_FAILURES = abs(int(os.environ["MAX_API_FAILURES"]))
 
 
 @dataclass
@@ -188,11 +189,11 @@ def prompt_for(s: Session) -> str:
     if s.state == State.AWAIT_ACCOUNT_ID:
         return render(Msg.ASK_ACCOUNT_ID)
     if s.state == State.AWAIT_NAME:
-        return "Could you please confirm your full name?"
+        return render(Msg.PROMPT_NAME)
     if s.state == State.AWAIT_FACTOR:
         return render(Msg.ASK_FACTOR)
     if s.state == State.AWAIT_AMOUNT:
-        return "How much would you like to pay?"
+        return render(Msg.PROMPT_AMOUNT)
     if s.state == State.AWAIT_CARD:
         assert s.amount is not None
         return render(Msg.ASK_CARD, amount=inr(s.amount))
@@ -212,7 +213,7 @@ def handle(s: Session, ext: Extraction, api: PaymentApi) -> tuple[Msg, dict]:
     turn = _ingest(s, ext)
 
     if "invalid_date" in turn.notes and not s.verified:
-        return Msg.INVALID_DATE, {}  # parse failure, not a mismatch — no attempt consumed
+        return Msg.INVALID_DATE, {}  # parse failure, not a mismatch; no attempt consumed
     if "card_early" in turn.notes:
         return Msg.CARD_TOO_EARLY, {"next_prompt": prompt_for(s)}
     if turn.account_id and (s.account is None or turn.account_id != s.account.account_id):
@@ -228,9 +229,8 @@ def handle(s: Session, ext: Extraction, api: PaymentApi) -> tuple[Msg, dict]:
             return Msg.BALANCE_INFO, {"remaining": inr(s.remaining)}
         return Msg.BALANCE_NOT_VERIFIED, {"next_prompt": prompt_for(s)}
 
-    # One message can satisfy several steps (an amount and a card arriving together),
-    # so a step returns None to hand the same turn to the next state's step. The loop
-    # is bounded by the state count, so a logic slip degrades to a re-ask, never a hang.
+    # One message may satisfy several steps (amount and card together): a step returns
+    # None to advance to the next state's step. Bounded by the state count so it can't hang.
     for _ in range(len(State)):
         result = _STEPS[s.state](s, turn, ext, api)
         if result is not None:
@@ -238,9 +238,7 @@ def handle(s: Session, ext: Extraction, api: PaymentApi) -> tuple[Msg, dict]:
     return Msg.FALLBACK, {"next_prompt": prompt_for(s)}
 
 
-# Per-state step handlers. Each takes the session, the parsed turn, the raw extraction,
-# and the API; it returns a (Msg, kwargs) reply, or None to advance to the new state
-# within the same turn. Registered in _STEPS at the bottom of this block.
+# Per-state handlers, keyed in _STEPS below.
 _StepResult = tuple[Msg, dict] | None
 
 
@@ -263,7 +261,7 @@ def _step_post_payment(s: Session, turn: "_Turn", ext: Extraction, api: PaymentA
     if s.remaining <= 0:
         return Msg.NOTHING_DUE, {}
     s.state = State.AWAIT_AMOUNT
-    return None  # the amount step runs this same turn
+    return None
 
 
 def _step_amount(s: Session, turn: "_Turn", ext: Extraction, api: PaymentApi) -> _StepResult:
@@ -331,7 +329,7 @@ def _lookup(s: Session, account_id: str, api: PaymentApi) -> tuple[Msg, dict]:
         return _api_failure(s)
     s.api_failures = 0  # the cap is for consecutive failures
     if s.account is not None:
-        # account switch: verification restarts, attempts persist, old account's ledger goes
+        # reset
         s.claims.clear()
         s.verified = False
         s.amount = s.early_amount = None
@@ -340,7 +338,7 @@ def _lookup(s: Session, account_id: str, api: PaymentApi) -> tuple[Msg, dict]:
         s.ledger.clear()
     s.account = account
     s.state = State.AWAIT_NAME
-    return _verify_progress(s)  # claims may already be complete (volunteered early)
+    return _verify_progress(s)
 
 
 def _verify_progress(s: Session) -> tuple[Msg, dict]:
@@ -361,8 +359,8 @@ def _verify_progress(s: Session) -> tuple[Msg, dict]:
         s.state = State.AWAIT_FACTOR
         return Msg.ASK_FACTOR, {}
     if not any(v == getattr(account, k) for k, v in provided.items()):
-        return _fail_attempt(s)  # no provided factor matched
-    s.verified = True  # name plus at least one matching factor, as the spec requires
+        return _fail_attempt(s)
+    s.verified = True  # name plus at least one matching factor, per the spec
     return _share_balance(s)
 
 
@@ -420,13 +418,13 @@ def _card_progress(s: Session, notes: set) -> tuple[Msg, dict]:
     if card.number and card.cvv and len(card.cvv) != cvv_length_for(card.number):
         card.cvv = None
         return _card_failure(s, Msg.CARD_INVALID_CVV, {"expected": cvv_length_for(card.number)})
-    assert s.amount is not None  # set before card collection starts
+    assert s.amount is not None
     missing = card.missing()
     if len(missing) == 4:
         return Msg.ASK_CARD, {"amount": inr(s.amount)}
     if missing:
         return Msg.CARD_PARTIAL, {"missing": ", ".join(missing)}
-    assert card.number is not None  # missing() is empty, so all fields are present
+    assert card.number is not None
     s.state = State.AWAIT_CONFIRM
     return Msg.CONFIRM, {"amount": inr(s.amount),
                          "card": mask_card(card.number[-4:]), "holder": card.holder}
@@ -434,7 +432,7 @@ def _card_progress(s: Session, notes: set) -> tuple[Msg, dict]:
 
 def _process_payment(s: Session, api: PaymentApi) -> tuple[Msg, dict]:
     card = s.card
-    assert s.account is not None and s.amount is not None  # AWAIT_CONFIRM invariants
+    assert s.account is not None and s.amount is not None
     amount = s.amount
     if s.idempotency_key is None:
         s.idempotency_key = uuid4().hex  # one key per charge, reused across any retry
@@ -446,7 +444,7 @@ def _process_payment(s: Session, api: PaymentApi) -> tuple[Msg, dict]:
     except PaymentDeclined as exc:
         return _declined(s, exc.error_code)
     except PaymentOutcomeUnknown:
-        # keep the key: a confirm-retry reuses it, so a charge that did land is not repeated
+        # keep the key so a confirm-retry can't double-charge a payment that may have landed
         return Msg.PAYMENT_UNKNOWN, {}
     except APIUnavailable:
         return _api_failure(s)
@@ -465,8 +463,7 @@ def _process_payment(s: Session, api: PaymentApi) -> tuple[Msg, dict]:
 
 
 def _declined(s: Session, code: str) -> tuple[Msg, dict]:
-    s.idempotency_key = None  # a re-collected card or new amount is a fresh charge
-    # format() ignores unused kwargs, so one bundle serves every declined template
+    s.idempotency_key = None
     kwargs = {"remaining": inr(s.remaining), "code": code}
     if code in ("invalid_card", "invalid_cvv", "invalid_expiry"):
         s.card.wipe()

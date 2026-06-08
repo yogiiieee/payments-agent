@@ -19,7 +19,7 @@ def main():
             continue
         print("agent:", agent.next(line)["message"])
         if agent.session.state.name in ("CLOSED", "LOCKED"):
-            break  # the agent has said its last word; exit instead of looping
+            break  # conversation is over
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ class Extraction(BaseModel):
     ] = "other"
     account_id: str | None = None
     full_name: str | None = None
-    dob_text: str | None = None      # date as written; parsed by validators, not the LLM
+    dob_text: str | None = None
     aadhaar_last4: str | None = None
     pincode: str | None = None
     amount: float | None = None
@@ -34,7 +34,7 @@ class Extraction(BaseModel):
     cardholder_name: str | None = None
 
 
-# --- fast-path: narrow, state-aware regexes; on match the LLM is skipped ---
+# --- layer 1: regexes; on match the LLM is skipped ---
 
 _GREET = re.compile(r"^(hi+|hello|hey|good (morning|afternoon|evening))[!. ]*$", re.I)
 _QUIT = re.compile(
@@ -127,7 +127,7 @@ class Extractor(Protocol):
 class LLMExtractor:
     def __init__(self, model: str | None = None):
         self.model: str = model or os.getenv("EXTRACTOR_MODEL") or "gpt-5-mini"
-        self._runnable: Any | None = None  # lazy, so Agent() constructs without an API key
+        self._runnable: Any | None = None
 
     def extract(self, text: str, context: str) -> Extraction | None:
         try:

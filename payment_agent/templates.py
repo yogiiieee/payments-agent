@@ -18,6 +18,8 @@ class Msg(StrEnum):
     ACCOUNT_NOT_FOUND = auto()
     ASK_NAME = auto()
     ASK_FACTOR = auto()
+    PROMPT_NAME = auto()
+    PROMPT_AMOUNT = auto()
     VERIFY_FAILED = auto()
     LOCKED = auto()
     LOCKED_FOLLOWUP = auto()
@@ -67,6 +69,8 @@ TEMPLATES = {
     Msg.ACCOUNT_NOT_FOUND: "I couldn't find an account with that ID. Could you double-check it and share it again?",
     Msg.ASK_NAME: "Got it. Could you please confirm your full name?",
     Msg.ASK_FACTOR: "Thanks. Could you verify one of: your date of birth, the last 4 digits of your Aadhaar, or your pincode?",
+    Msg.PROMPT_NAME: "Could you please confirm your full name?",
+    Msg.PROMPT_AMOUNT: "How much would you like to pay?",
     Msg.VERIFY_FAILED: "Those details don't match. You have {attempts_left} attempt(s) left. Please share your full name and one of: date of birth, Aadhaar last 4, or pincode.",
     Msg.LOCKED: "I'm sorry, but verification has failed too many times, so I can't proceed with this session. Please contact support for help with your account.",
     Msg.LOCKED_FOLLOWUP: "This session is closed because verification was unsuccessful. Please contact support.",
